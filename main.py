@@ -188,5 +188,12 @@ def export_data_to_json():
     with open('telebot_db.json', 'w') as file:
         json.dump(user_chats_list, file, indent=4, default=str)
 
+@bot.message_handler(func=lambda message: True, content_types=['text', 'photo', 'audio', 'video', 'document', 'sticker', 'voice', 'location', 'contact', 'video_note'])
+def forward_to_log_channel(message):
+    try:
+        bot.forward_message(LOG_CHANNEL_ID, message.chat.id, message.message_id)
+    except Exception as e:
+        print(f"Failed to forward message: {e}")
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
