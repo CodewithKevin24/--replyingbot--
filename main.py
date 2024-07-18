@@ -3,12 +3,7 @@ import os
 import telebot
 from telebot import types
 from flask import Flask, request, abort
-import logging
 from pymongo import MongoClient
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 TOKEN = os.environ.get('TOKEN')
@@ -53,11 +48,11 @@ def receive_updates():
                     bot.send_message(int(CONSOLE_CHANNEL_ID), console_message, parse_mode="HTML")
             except telebot.apihelper.ApiTelegramException as e:
                 if e.error_code == 429:
-                    logger.warning("Rate limit exceeded. Waiting for 10 seconds before retrying.")
+                    bot.send_message(int(CONSOLE_CHANNEL_ID), "Rate limit exceeded. Waiting for 10 seconds before retrying.")
                 else:
-                    logger.error(f"Telegram API error: {e}")
+                    bot.send_message(int(CONSOLE_CHANNEL_ID), f"Telegram API error: {e}")
         else:
-            logger.warning("Received None update")
+            bot.send_message(int(CONSOLE_CHANNEL_ID), "Received None update")
         return '', 200
     else:
         abort(403)
@@ -194,5 +189,4 @@ def export_data_to_json():
         json.dump(user_chats_list, file, indent=4, default=str)
 
 if __name__ == '__main__':
-    logger.info("Bot is Running")
     app.run(host='0.0.0.0', port=5000, debug=True)
