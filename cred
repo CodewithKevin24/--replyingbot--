@@ -1,0 +1,8 @@
+{
+  "TOKEN": "6814337893:AAHq44G9wtPMjpBPBVUjV5YPxbr0UQ6Vchs",
+  "CONSOLE_CHANNEL_ID": "-1002074199343",
+  "OWNER_ID": "898142325",
+  "LOG_CHANNEL_ID": "-1002045621703",
+  "WEBHOOK_URL": "189f2c5a-c18b-4ac1-bcce-8ecbf5897ecd-00-2ax5c090mbr66.pike.replit.dev/",
+  "MONGO_URI": "mongodb+srv://codewithkevin24:12345@cluster0.xexzw2s.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+}
