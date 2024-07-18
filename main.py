@@ -24,6 +24,38 @@ user_chats_collection = db['user_chats']
 
 pending_broadcasts = {}
 
+# Send a ping to confirm a successful connection
+try:
+    client.admin.command('ping')
+    print("Pinged your deployment. You successfully connected to MongoDB!")
+    bot.send_message(CONSOLE_CHANNEL_ID, "Pinged your deployment. You successfully connected to MongoDB!", parse_mode="HTML")
+except Exception as e:
+    print(e)
+    bot.send_message(CONSOLE_CHANNEL_ID, f"Failed to connect to MongoDB: {e}", parse_mode="HTML")
+
+def set_webhook_with_retry(url, max_retries=5, backoff_factor=2):
+    for attempt in range(max_retries):
+        try:
+            bot.set_webhook(url=url, drop_pending_updates=False)
+            print("Webhook set successfully")
+            break
+        except telebot.apihelper.ApiTelegramException as e:
+            if e.error_code == 429:
+                retry_after = e.result_json['parameters']['retry_after']
+                print(f"Rate limit exceeded. Retrying after {retry_after} seconds.")
+                time.sleep(retry_after)
+            else:
+                print(f"Failed to set webhook: {e}")
+                if attempt < max_retries - 1:
+                    sleep_time = backoff_factor ** attempt
+                    print(f"Retrying in {sleep_time} seconds...")
+                    time.sleep(sleep_time)
+                else:
+                    print("Max retries reached. Exiting.")
+                    sys.exit(1)
+
+set_webhook_with_retry(CALLURL)
+
 @app.route('/')
 def host():
     base_url = request.base_url
@@ -38,21 +70,19 @@ def receive_updates():
             try:
                 bot.process_new_updates([update])
                 if update.message and update.message.from_user:
+                    user_first_name = update.message.from_user.first_name
                     user_id = update.message.from_user.id
-                    user_chats_collection.update_one(
-                        {'_id': user_id},
-                        {'$set': {'_id': update.message.chat.id}},
-                        upsert=True
-                    )
-                    console_message = f"User {update.message.from_user.first_name} (ID: {user_id}) Getting Messages."
-                    bot.send_message(int(CONSOLE_CHANNEL_ID), console_message, parse_mode="HTML")
+                    console_message = f"User {user_first_name} (Chat ID: {user_id}) Getting Videos."
+                    bot.send_message(CONSOLE_CHANNEL_ID, console_message, parse_mode="HTML")
             except telebot.apihelper.ApiTelegramException as e:
                 if e.error_code == 429:
-                    bot.send_message(int(CONSOLE_CHANNEL_ID), "Rate limit exceeded. Waiting for 10 seconds before retrying.")
+                    print(f"Rate limit exceeded. Waiting for 10 seconds before retrying.")
+                    time.sleep(10)
+                    bot.process_new_updates([update])
                 else:
-                    bot.send_message(int(CONSOLE_CHANNEL_ID), f"Telegram API error: {e}")
+                    print(f"Telegram API error: {e}")
         else:
-            bot.send_message(int(CONSOLE_CHANNEL_ID), "Received None update")
+            print("Received None update")
         return '', 200
     else:
         abort(403)
