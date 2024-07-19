@@ -6,11 +6,12 @@ from flask import Flask, request, abort
 from pymongo import MongoClient
 
 app = Flask(__name__)
-TOKEN = os.environ.get('TOKEN')
-OWNER_ID = int(os.environ.get('OWNER_ID'))
-CALLURL = os.environ.get('WEBHOOK_URL')
-CONSOLE_CHANNEL_ID = int(os.environ.get('CONSOLE_CHANNEL_ID'))
-MONGO_URI = os.environ.get('MONGO_URI')
+TOKEN = os.getenv('TOKEN')
+OWNER_ID = int(os.getenv('OWNER_ID'))
+CALLURL = os.getenv('WEBHOOK_URL')
+CONSOLE_CHANNEL_ID = int(os.getenv('CONSOLE_CHANNEL_ID'))
+MONGO_URI = os.getenv('MONGO_URI')
+LOG_CHANNEL_ID = int(os.getenv('LOG_CHANNEL_ID'))
 
 # Initialize the bot
 bot = telebot.TeleBot(TOKEN)
@@ -24,74 +25,39 @@ user_chats_collection = db['user_chats']
 
 pending_broadcasts = {}
 
-# Send a ping to confirm a successful connection
-try:
-    client.admin.command('ping')
-    print("Pinged your deployment. You successfully connected to MongoDB!")
-    bot.send_message(CONSOLE_CHANNEL_ID, "Pinged your deployment. You successfully connected to MongoDB!", parse_mode="HTML")
-except Exception as e:
-    print(e)
-    bot.send_message(CONSOLE_CHANNEL_ID, f"Failed to connect to MongoDB: {e}", parse_mode="HTML")
-
-def set_webhook_with_retry(url, max_retries=5, backoff_factor=2):
-    for attempt in range(max_retries):
-        try:
-            bot.set_webhook(url=url, drop_pending_updates=False)
-            print("Webhook set successfully")
-            break
-        except telebot.apihelper.ApiTelegramException as e:
-            if e.error_code == 429:
-                retry_after = e.result_json['parameters']['retry_after']
-                print(f"Rate limit exceeded. Retrying after {retry_after} seconds.")
-                time.sleep(retry_after)
-            else:
-                print(f"Failed to set webhook: {e}")
-                if attempt < max_retries - 1:
-                    sleep_time = backoff_factor ** attempt
-                    print(f"Retrying in {sleep_time} seconds...")
-                    time.sleep(sleep_time)
-                else:
-                    print("Max retries reached. Exiting.")
-                    sys.exit(1)
-
-set_webhook_with_retry(CALLURL)
-
 @app.route('/')
 def host():
-    base_url = request.base_url
-    return f"The HOST URL of this application is: {base_url}"
+    return f"The HOST URL of this application is: {request.base_url}"
 
 @app.route('/', methods=['POST'])
 def receive_updates():
     if request.headers.get('content-type') == 'application/json':
-        json_string = request.get_data(as_text=True)
-        update = telebot.types.Update.de_json(json_string)
-        if update is not None:
+        update = telebot.types.Update.de_json(request.get_data(as_text=True))
+        if update:
             try:
                 bot.process_new_updates([update])
                 if update.message and update.message.from_user:
-                    user_first_name = update.message.from_user.first_name
                     user_id = update.message.from_user.id
-                    console_message = f"User {user_first_name} (Chat ID: {user_id}) Getting Videos."
+                    user_chats_collection.update_one(
+                        {'_id': user_id},
+                        {'$set': {'chat_id': update.message.chat.id}},
+                        upsert=True
+                    )
+                    console_message = f"User {update.message.from_user.first_name} (ID: {user_id}) Getting Messages."
                     bot.send_message(CONSOLE_CHANNEL_ID, console_message, parse_mode="HTML")
             except telebot.apihelper.ApiTelegramException as e:
-                if e.error_code == 429:
-                    print(f"Rate limit exceeded. Waiting for 10 seconds before retrying.")
-                    time.sleep(10)
-                    bot.process_new_updates([update])
-                else:
-                    print(f"Telegram API error: {e}")
+                error_message = "Rate limit exceeded. Waiting for 10 seconds before retrying." if e.error_code == 429 else f"Telegram API error: {e}"
+                bot.send_message(CONSOLE_CHANNEL_ID, error_message)
         else:
-            print("Received None update")
+            bot.send_message(CONSOLE_CHANNEL_ID, "Received None update")
         return '', 200
     else:
         abort(403)
 
 @bot.message_handler(commands=['start'])
 def handle_start(message):
-    user_firstname = message.from_user.first_name
     welcome_message = (
-        f"👋 Hi, {user_firstname}! 👋\n\n"
+        f"👋 Hi, {message.from_user.first_name}! 👋\n\n"
         "🤖 This Automated Bot is here to assist you! 🤖\n"
         "Your messages will be forwarded to the Owner. 📬\n"
         "Feel free to start chatting! 💬"
@@ -102,7 +68,7 @@ def handle_start(message):
 def handle_sendall(message):
     if message.chat.id == OWNER_ID:
         try:
-            broadcast_message = message.text.split(" ", 1)[1]  # Extract the message to broadcast
+            broadcast_message = message.text.split(" ", 1)[1]
             markup = types.InlineKeyboardMarkup()
             markup.add(types.InlineKeyboardButton("Yes", callback_data="confirm_yes"),
                        types.InlineKeyboardButton("No", callback_data="confirm_no"))
@@ -117,7 +83,6 @@ def handle_sendall(message):
 def handle_exportdata(message):
     if message.chat.id == OWNER_ID:
         try:
-            # Export data to JSON file
             export_data_to_json()
             with open('telebot_db.json', 'rb') as file:
                 bot.send_document(OWNER_ID, file, caption="Here is the exported data.")
@@ -131,8 +96,9 @@ def handle_exportdata(message):
 def confirm_broadcast(call):
     if call.message.chat.id == OWNER_ID:
         if call.data == "confirm_yes":
-            bot.send_message(OWNER_ID, "Please send the image you want to include with the broadcast message.")
+            bot.edit_message_text("Please send the image you want to include with the broadcast message.", chat_id=call.message.chat.id, message_id=call.message.message_id)
         elif call.data == "confirm_no":
+            bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
             broadcast_message = pending_broadcasts.pop(OWNER_ID, "")
             if broadcast_message:
                 send_broadcast_message(broadcast_message)
@@ -144,24 +110,14 @@ def confirm_broadcast(call):
 def handle_image(message):
     if message.chat.id == OWNER_ID and OWNER_ID in pending_broadcasts:
         broadcast_message = pending_broadcasts.pop(OWNER_ID, "")
-        if broadcast_message:
-            file_id = message.photo[-1].file_id
-            send_broadcast_message(broadcast_message, file_id)
-        else:
-            bot.send_message(OWNER_ID, "No broadcast message found to send.")
+        file_id = message.photo[-1].file_id
+        send_broadcast_message(broadcast_message, file_id)
     else:
-        user_info = f"**Firstname:** {message.from_user.first_name}\n**Lastname:** {message.from_user.last_name}\n**Username:** {message.from_user.username}\n**Chat ID:** `{message.chat.id}`\n"
-        full_message = f"{user_info}\nMessage:```{message.text}```"
-        bot.send_message(OWNER_ID, full_message, parse_mode='Markdown')
-        bot.reply_to(message, f"📤 Your message has been sent to the Owner.", parse_mode='Markdown')
+        forward_to_owner(message)
 
 def send_broadcast_message(broadcast_message, photo_id=None):
     users = user_chats_collection.find()
-    total = user_chats_collection.count_documents({})
-    successful = 0
-    blocked = 0
-    deleted = 0
-    unsuccessful = 0
+    total, successful, blocked, deleted, unsuccessful = user_chats_collection.count_documents({}), 0, 0, 0, 0
 
     for user in users:
         try:
@@ -178,14 +134,12 @@ def send_broadcast_message(broadcast_message, photo_id=None):
             else:
                 unsuccessful += 1
 
-    report_message = f"""
-<b><u>Broadcast Completed</u></b>
-Total Users: <code>{total}</code>
-Successful: <code>{successful}</code>
-Blocked Users: <code>{blocked}</code>
-Deleted Accounts: <code>{deleted}</code>
-Unsuccessful: <code>{unsuccessful}</code>
-"""
+    report_message = (f"<b><u>Broadcast Completed</u></b>\n"
+                      f"Total Users: <code>{total}</code>\n"
+                      f"Successful: <code>{successful}</code>\n"
+                      f"Blocked Users: <code>{blocked}</code>\n"
+                      f"Deleted Accounts: <code>{deleted}</code>\n"
+                      f"Unsuccessful: <code>{unsuccessful}</code>\n")
     bot.send_message(OWNER_ID, report_message, parse_mode='HTML')
 
 @bot.message_handler(func=lambda message: True)
@@ -194,29 +148,29 @@ def handle_messages(message):
         try:
             user_id, reply_text = map(str, message.text.split(" ", 1))
             user_id = int(user_id)
-            if user_id <= 0:
-                raise ValueError("Invalid user ID")
-            try:
+            if user_id > 0:
                 bot.send_message(user_id, f"👤 **Owner Said:** ```{reply_text}```", parse_mode='Markdown')
                 bot.send_message(OWNER_ID, f"✅ Your message to {user_id} has been sent.")
-            except telebot.apihelper.ApiTelegramException as e:
-                bot.send_message(OWNER_ID, f"❌ Failed to send message to user {user_id}: {e}")
-        except ValueError:
+            else:
+                raise ValueError("Invalid user ID")
+        except (ValueError, IndexError):
             bot.send_message(OWNER_ID, "❗ Please provide a valid user ID and reply message in the correct format.")
     else:
-        user_info = f"**Firstname:** {message.from_user.first_name}\n**Lastname:** {message.from_user.last_name}\n**Username:** {message.from_user.username}\n**Chat ID:** `{message.chat.id}`\n"
-        full_message = f"{user_info}\nMessage:```{message.text}```"
-        bot.send_message(OWNER_ID, full_message, parse_mode='Markdown')
-        bot.reply_to(message, f"📤 Your message has been sent to the Owner.", parse_mode='Markdown')
+        forward_to_owner(message)
+
+def forward_to_owner(message):
+    user_info = (f"**Firstname:** {message.from_user.first_name}\n"
+                 f"**Lastname:** {message.from_user.last_name}\n"
+                 f"**Username:** {message.from_user.username}\n"
+                 f"**Chat ID:** `{message.chat.id}`\n")
+    full_message = f"{user_info}\nMessage:```{message.text}```"
+    bot.send_message(OWNER_ID, full_message, parse_mode='Markdown')
+    bot.reply_to(message, "📤 Your message has been sent to the Owner.", parse_mode='Markdown')
 
 def export_data_to_json():
-    # Fetch all documents from the collection
     user_chats = user_chats_collection.find()
-    user_chats_list = list(user_chats)
-
-    # Write to JSON file
     with open('telebot_db.json', 'w') as file:
-        json.dump(user_chats_list, file, indent=4, default=str)
+        json.dump(list(user_chats), file, indent=4, default=str)
 
 @bot.message_handler(func=lambda message: True, content_types=['text', 'photo', 'audio', 'video', 'document', 'sticker', 'voice', 'location', 'contact', 'video_note'])
 def forward_to_log_channel(message):
